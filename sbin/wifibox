@@ -67,6 +67,87 @@ WIFIBOX_VM="wifibox"
 UDS_PASSTHRU_DAEMON_ID="wifibox-uds-passthru"
 VM_MANAGER_DAEMON_ID="wifibox-vm-manager"
 
+# Platform abstraction initialization
+platform_init() {
+    # Default platform detection (lowercased uname -s)
+    _uname=$(uname -s 2>/dev/null || echo unknown)
+    case "${_uname}" in
+        OpenBSD) PLATFORM=openbsd ;; 
+        NetBSD) PLATFORM=netbsd ;; 
+        Linux) PLATFORM=linux ;; 
+        Haiku) PLATFORM=haiku ;; 
+        *) PLATFORM=$(echo "${_uname}" | tr '[:upper:]' '[:lower:]') ;;
+    esac
+
+    # Allow override from env
+    PLATFORM=${PLATFORM:-${PLATFORM}}
+
+    # Prefer installed config under CONFDIR, fall back to repo etc/platform for development
+    for f in "${CONFDIR}/platform/${PLATFORM}.sh" "./etc/platform/${PLATFORM}.sh" "./etc/platform/generic.sh"; do
+        if [ -f "${f}" ]; then
+            # shellcheck disable=SC1090
+            . "${f}"
+            return 0
+        fi
+    done
+}
+
+# Call platform_init early so platform functions/variables may be provided
+platform_init
+
+# Provide default shim functions if platform doesn't provide them.
+# Platform-specific files may override these function names (modload_platform, modunload_platform, modstat_platform,
+# hypervisor_platform, hypervisor_ctl_platform, devctl_platform) to implement host-specific behavior.
+
+modstat() {
+    if type modstat_platform >/dev/null 2>&1; then
+        modstat_platform "$@"
+    else
+        ${KLDSTAT} "$@"
+    fi
+}
+
+modload() {
+    if type modload_platform >/dev/null 2>&1; then
+        modload_platform "$@"
+    else
+        ${KLDLOAD} "$@"
+    fi
+}
+
+modunload() {
+    if type modunload_platform >/dev/null 2>&1; then
+        modunload_platform "$@"
+    else
+        ${KLDUNLOAD} "$@"
+    fi
+}
+
+hypervisor() {
+    if type hypervisor_platform >/dev/null 2>&1; then
+        hypervisor_platform "$@"
+    else
+        ${BHYVE} "$@"
+    fi
+}
+
+hypervisor_ctl() {
+    if type hypervisor_ctl_platform >/dev/null 2>&1; then
+        hypervisor_ctl_platform "$@"
+    else
+        ${BHYVECTL} "$@"
+    fi
+}
+
+devctl_cmd() {
+    if type devctl_platform >/dev/null 2>&1; then
+        devctl_platform "$@"
+    else
+        ${DEVCTL} "$@"
+    fi
+}
+
+# Logging and helper functions
 log() {
     local _type="$1"
     local _level
@@ -78,8 +159,8 @@ log() {
     _timestamp="$(date +'%FT%H:%M:%S%z')"
 
     if [ ! -f "${_config}" ]; then
-	${ECHO} "ERROR: ${_config} is missing, please create it from the sample."
-	exit 3
+        ${ECHO} "ERROR: ${_config} is missing, please create it from the sample."
+        exit 3
     fi
 
     loglevel=warn
@@ -88,33 +169,33 @@ log() {
     . "${_config}"
 
     case ${loglevel} in
-	[Ee][Rr][Rr][Oo][Rr]) _loglevel=1;;
-	[Ww][Aa][Rr][Nn]) _loglevel=2;;
-	[Ii][Nn][Ff][Oo]) _loglevel=3;;
-	[Dd][Ee][Bb][Uu][Gg]) _loglevel=4;;
-	*) _loglevel=0;;
+        [Ee][Rr][Rr][Oo][Rr]) _loglevel=1;;
+        [Ww][Aa][Rr][Nn]) _loglevel=2;;
+        [Ii][Nn][Ff][Oo]) _loglevel=3;;
+        [Dd][Ee][Bb][Uu][Gg]) _loglevel=4;;
+        *) _loglevel=0;;
     esac
 
     case ${_type} in
-	error) [ ${_loglevel} -lt 1 ] && return 0;;
-	warn) [ ${_loglevel} -lt 2 ] && return 0;;
-	info) [ ${_loglevel} -lt 3 ] && return 0;;
-	debug) [ ${_loglevel} -lt 4 ] && return 0;;
-	*) return 0;;
+        error) [ ${_loglevel} -lt 1 ] && return 0;;
+        warn) [ ${_loglevel} -lt 2 ] && return 0;;
+        info) [ ${_loglevel} -lt 3 ] && return 0;;
+        debug) [ ${_loglevel} -lt 4 ] && return 0;;
+        *) return 0;;
     esac
 
-    _level="$(${PRINTF} "%-5s" "${_type}" | ${TR} "[:lower:]" "[:upper:]")"
+    _level="$( ${PRINTF} "%-5s" "${_type}" | ${TR} "[:lower:]" "[:upper:]")"
 
     if [ -w ${WIFIBOX_LOG} ]; then
-	${ECHO} "${_timestamp} ${_level} ${_message}" >> ${WIFIBOX_LOG}
+        ${ECHO} "${_timestamp} ${_level} ${_message}" >> ${WIFIBOX_LOG}
     elif [ -z "${WARNED_ABOUT_LOG}" ]; then
-	${ECHO} "WARNING: ${WIFIBOX_LOG} is not writeable, messages could not be logged."
-	WARNED_ABOUT_LOG=yes
+        ${ECHO} "WARNING: ${WIFIBOX_LOG} is not writeable, messages could not be logged."
+        WARNED_ABOUT_LOG=yes
     fi
 
     case ${_type} in
-	error) ${ECHO} "ERROR: ${_message}.";;
-	warn) ${ECHO} "WARNING: ${_message}.";;
+        error) ${ECHO} "ERROR: ${_message}.";;
+        warn) ${ECHO} "WARNING: ${_message}.";;
     esac
 }
 
@@ -130,20 +211,21 @@ capture_output() {
     local _id="$2"
 
     while read -r message; do
-	log "${_type}" "[${_id}] ${message}"
+        log "${_type}" "[${_id}] ${message}"
     done
 }
 
+# Replace direct bhyve usage with the hypervisor() wrapper
 check_virtfs() {
     local _backends
 
-    _backends=$(${BHYVE} -s help)
-    log debug "Backends reported by bhyve:"
-    ${ECHO} "${_backends}" | capture_output debug bhyve
+    _backends=$(hypervisor -s help 2>&1)
+    log debug "Backends reported by hypervisor:"
+    ${ECHO} "${_backends}" | capture_output debug hypervisor
 
     if ! (${ECHO} "${_backends}" | ${GREP} -Fq virtio-9p); then
-	log error "The Virtio 9p (VirtFS) bhyve interface is not available"
-	exit 127
+        log error "The Virtio 9p (VirtFS) interface is not available in the chosen hypervisor"
+        exit 127
     fi
 }
 
@@ -154,10 +236,10 @@ sysctl_value() {
 get_kmod_path() {
     local _kmod="$1"
 
-    ${KLDSTAT} -v -n "${_kmod}" 2> /dev/null \
-	| ${TAIL} +2 \
-	| ${HEAD} -1 \
-	| ${SED} -e 's![^(]*(\([^)]*\))!\1!'
+    modstat -v -n "${_kmod}" 2> /dev/null \
+        | ${TAIL} +2 \
+        | ${HEAD} -1 \
+        | ${SED} -e 's![^(]*(\([^)]*\))!\1!'
 }
 
 assert_kmod_loaded() {
@@ -166,41 +248,41 @@ assert_kmod_loaded() {
     local _kmod_path
 
     if [ -n "$2" ]; then
-	_kmod_file="$2"
+        _kmod_file="$2"
     else
-	_kmod_file="${_kmod}"
+        _kmod_file="${_kmod}"
     fi
 
     log debug "Check location: kmod=${_kmod}, kmod_file=${_kmod_file}"
 
-    if (${KLDSTAT} -q -m "${_kmod}" | capture_output debug kldstat); then
-	_kmod_path="$(get_kmod_path "${_kmod}")"
+    if (modstat -q -m "${_kmod}" | capture_output debug modstat); then
+        _kmod_path="$(get_kmod_path "${_kmod}")"
 
-	if [ -z "${_kmod_path}" ]; then
-	    log info "${_kmod}.ko is built into the kernel, ignoring ${_kmod_file}"
-	else
-	    log info "${_kmod}.ko is expected at path: ${_kmod_file}"
-	    log info "${_kmod}.ko is found at path: ${_kmod_path}"
+        if [ -z "${_kmod_path}" ]; then
+            log info "${_kmod}.ko is built into the kernel, ignoring ${_kmod_file}"
+        else
+            log info "${_kmod}.ko is expected at path: ${_kmod_file}"
+            log info "${_kmod}.ko is found at path: ${_kmod_path}"
 
-	    if [ "${_kmod_path}" != "${_kmod_file}" ] \
-		   && ! (${KLDUNLOAD} "${_kmod}" | capture_output debug kldunload); then
-		log error "${_kmod}.ko is loaded from a different location, but cannot be replaced"
-		exit 127
-	    fi
-	fi
+            if [ "${_kmod_path}" != "${_kmod_file}" ] \
+                   && ! (modunload "${_kmod}" | capture_output debug modunload); then
+                log error "${_kmod}.ko is loaded from a different location, but cannot be replaced"
+                exit 127
+            fi
+        fi
     fi
 
     log debug "Assert loaded: kmod=${_kmod}, kmod_file=${_kmod_file}"
 
-    if ! (${KLDSTAT} -q -m "${_kmod}" | capture_output debug kldstat); then
-	log debug "Kernel module ${_kmod} is not loaded"
+    if ! (modstat -q -m "${_kmod}" | capture_output debug modstat); then
+        log debug "Kernel module ${_kmod} is not loaded"
 
-	if ! (${KLDLOAD} "${_kmod_file}" 2>&1 | capture_output debug kldload); then
-	    log error "${_kmod_file} kernel module could not be loaded"
-	    exit 127
-	fi
+        if ! (modload "${_kmod_file}" 2>&1 | capture_output debug modload); then
+            log error "${_kmod_file} kernel module could not be loaded"
+            exit 127
+        fi
 
-	log debug "Kernel module ${_kmod} was loaded successfully"
+        log debug "Kernel module ${_kmod} was loaded successfully"
     fi
 }
 
@@ -226,8 +308,8 @@ check_iommu() {
     log debug "assert hardware support present: iommu=${_iommu}, amdvi=${_amdvi}"
 
     if [ "${_iommu}" -eq "0" ] && [ "${_amdvi}" -eq "0" ]; then
-	log error "PCI pass-through is not available for bhyve"
-	exit 127
+        log error "PCI pass-through is not available for the chosen hypervisor/platform"
+        exit 127
     fi
 }
 
@@ -245,8 +327,8 @@ load_bhyve_conf_values() {
     local _config="${CONFDIR}/bhyve.conf"
 
     if [ ! -f "${_config}" ]; then
-	log error "${_config} is missing, please create it from the sample"
-	exit 3
+        log error "${_config} is missing, please create it from the sample"
+        exit 3
     fi
 
     # Internal defaults
@@ -257,7 +339,7 @@ load_bhyve_conf_values() {
     priority=50
     stop_wait_max=10
 
-    log info "Pulling bhyve options from configuration file"
+    log info "Pulling hypervisor options from configuration file"
     # shellcheck source=./etc/bhyve.conf.sample
     . "${CONFDIR}/bhyve.conf"
 
@@ -268,37 +350,37 @@ load_bhyve_conf_values() {
     log debug "priority=${priority}"
     log debug "stop_wait_max=${stop_wait_max}"
 
-    _max_vmm_cpus=$(${SYSCTL} -n hw.vmm.maxcpu)
+    _max_vmm_cpus=$(${SYSCTL} -n hw.vmm.maxcpu 2>/dev/null || echo 1)
 
-    log debug "bhyve max cpus=${_max_vmm_cpus}"
+    log debug "hypervisor max cpus=${_max_vmm_cpus}"
 
     assert_value_ranged_integer \
-	"bhyve.conf" "cpus" 1 "${_max_vmm_cpus}" \
-	"${cpus}"
+        "bhyve.conf" "cpus" 1 "${_max_vmm_cpus}" \
+        "${cpus}"
 
     assert_value_wellformed \
-	"bhyve.conf" "memory" \
-	'^[[:space:]]*[0-9]+([Kk]|[Mm]|[Gg]|[Tt])?[[:space:]]*$' \
-	"non-negative integer, suffixed with unit: K, M, G, T" \
-	"${memory}"
+        "bhyve.conf" "memory" \
+        '^[[:space:]]*[0-9]+([Kk]|[Mm]|[Gg]|[Tt])?[[:space:]]*$' \
+        "non-negative integer, suffixed with unit: K, M, G, T" \
+        "${memory}"
 
     assert_value_wellformed \
-	"bhyve.conf" "passthru" \
-	'^([[:space:]]*[0-9]{1,3}/[0-9]{1,3}/[0-9]{1,3}[[:space:]]*)*$' \
-	"list of slot/bus/function, triples of non-negative integers" \
-	"${passthru}"
+        "bhyve.conf" "passthru" \
+        '^([[:space:]]*[0-9]{1,3}/[0-9]{1,3}/[0-9]{1,3}[[:space:]]*)*$' \
+        "list of slot/bus/function, triples of non-negative integers" \
+        "${passthru}"
 
     assert_value_yesno \
-	"bhyve.conf" "console" \
-	"${console}"
+        "bhyve.conf" "console" \
+        "${console}"
 
     assert_value_ranged_integer \
-	"bhyve.conf" "priority" 0 99 \
-	"${priority}"
+        "bhyve.conf" "priority" 0 99 \
+        "${priority}"
 
     assert_value_ranged_integer \
-	"bhyve.conf" "stop_wait_max" 1 60 \
-	"${stop_wait_max}"
+        "bhyve.conf" "stop_wait_max" 1 60 \
+        "${stop_wait_max}"
 }
 
 has_tap_interface() {
@@ -314,10 +396,10 @@ create_tap() {
     assert_if_tuntap_loaded
 
     if ! has_tap_interface; then
-	log info "Creating tap interface: ${WIFIBOX_IF}"
-	${IFCONFIG} tap create name ${WIFIBOX_IF} up 2>&1 | capture_output debug ifconfig
+        log info "Creating tap interface: ${WIFIBOX_IF}"
+        ${IFCONFIG} tap create name ${WIFIBOX_IF} up 2>&1 | capture_output debug ifconfig
     else
-	log warn "Tap interface already exists: ${WIFIBOX_IF}, skipping creation"
+        log warn "Tap interface already exists: ${WIFIBOX_IF}, skipping creation"
     fi
 }
 
@@ -328,9 +410,9 @@ destroy_tap() {
 
 find_guest_ip() {
     ${NETSTAT} -r \
-	| ${GREP} "^default.*${WIFIBOX_IF}\$" \
-	| ${HEAD} -1 \
-	| ${SED} -E "s!^default[ ]+([0-9\.]+)[ ]+.*${WIFIBOX_IF}\$!\1!"
+        | ${GREP} "^default.*${WIFIBOX_IF}$" \
+        | ${HEAD} -1 \
+        | ${SED} -E "s!^default[ ]+([0-9\.]+)[ ]+.*${WIFIBOX_IF}$!\\1!"
 }
 
 get_uds_passthru_connections() {
@@ -353,13 +435,13 @@ uds_passthru_start() {
     _connections="$(get_uds_passthru_connections)"
 
     if [ -n "${_connections}" ]; then
-	log warn "Unix Domain Sockets are already forwarded, skipping"
-	return 1
+        log warn "Unix Domain Sockets are already forwarded, skipping"
+        return 1
     fi
 
     if [ ! -x "${SOCAT}" ]; then
-	log warn "Socat binary could not be found as ${SOCAT}, dropping UDS pass-through"
-	return 1
+        log warn "Socat binary could not be found as ${SOCAT}, dropping UDS pass-through"
+        return 1
     fi
 
     log info "Bringing up Unix Domain Socket pass-through"
@@ -368,38 +450,38 @@ uds_passthru_start() {
     . "${UDS_CONFIG}"
 
     if [ -z "${network}" ]; then
-	_ip=$(find_guest_ip)
+        _ip=$(find_guest_ip)
     else
-	_ip=${network%%:*}
+        _ip=${network%%:*}
     fi
 
     log info "Found guest IP address: ${_ip}"
 
     if [ -z "${_ip}" ]; then
-	log warn "No guest IP address could be discovered, dropping UDS pass-through"
-	return 1
+        log warn "No guest IP address could be discovered, dropping UDS pass-through"
+        return 1
     fi
 
     log info "Configured sockets: [${sockets}]"
 
     for s in ${sockets}; do
-	_path="${s##*path=}"; _path="${_path%%,*}"
-	_port="${s##*port=}"; _port="${_port%%,*}"
-	_user="${s##*user=}"; _user="${_user%%,*}"
-	_group="${s##*group=}"; _group="${_group%%,*}"
-	_mode="${s##*mode=}"; _mode="${_mode%%,*}"
+        _path="${s##*path=}"; _path="${_path%%,*}"
+        _port="${s##*port=}"; _port="${_port%%,*}"
+        _user="${s##*user=}"; _user="${_user%%,*}"
+        _group="${s##*group=}"; _group="${_group%%,*}"
+        _mode="${s##*mode=}"; _mode="${_mode%%,*}"
 
-	if [ -z "${_port}" ]; then
-	    log warn "No port defined for ${_path}, dropping UDS pass-through"
-	    continue
-	fi
+        if [ -z "${_port}" ]; then
+            log warn "No port defined for ${_path}, dropping UDS pass-through"
+            continue
+        fi
 
-	log info "Hooking up ${_ip}:${_port} as ${_path} (${_user}:${_group}@${_mode})"
-	${DAEMON} -r -t "${UDS_PASSTHRU_DAEMON_ID}" \
-	    "${SOCAT}" \
-	    UNIX-RECVFROM:"${_path}",reuseaddr,fork,unlink-early,user="${_user}",group="${_group}",mode="${_mode}" \
-	    TCP4:"${_ip}":"${_port}" 2>&1 \
-	    | capture_output debug socat &
+        log info "Hooking up ${_ip}:${_port} as ${_path} (${_user}:${_group}@${_mode})"
+        ${DAEMON} -r -t "${UDS_PASSTHRU_DAEMON_ID}" \
+            "${SOCAT}" \
+            UNIX-RECVFROM:"${_path}",reuseaddr,fork,unlink-early,user="${_user}",group="${_group}",mode="${_mode}" \
+            TCP4:"${_ip}":"${_port}" 2>&1 \
+            | capture_output debug socat &
     done
 }
 
@@ -420,10 +502,10 @@ get_ppt_devices() {
     load_bhyve_conf_values
 
     if [ -z "${passthru}" ]; then
-	${ECHO} ""
+        ${ECHO} ""
     else
-	${ECHO} "${passthru}" \
-	    | ${SED} -E 's!([0-9]*)/([0-9]*)/([0-9]*)!pci\1:\2:\3!g'
+        ${ECHO} "${passthru}" \
+            | ${SED} -E 's!([0-9]*)/([0-9]*)/([0-9]*)!pci\1:\2:\3!g'
     fi
 }
 
@@ -438,23 +520,23 @@ get_vm_pid() {
 destroy_vm() {
     log info "Destroying guest ${WIFIBOX_VM}"
 
-    ${BHYVECTL} --destroy --vm=${WIFIBOX_VM} 2>&1 | capture_output info bhyvectl
+    hypervisor_ctl --destroy --vm=${WIFIBOX_VM} 2>&1 | capture_output info hypervisor_ctl
     ${SLEEP} 0.5 2>&1 | capture_output debug sleep
 
     _ppts="$(get_ppt_devices)"
 
-    log info "Destroying bhyve PPT devices: [${_ppts}]"
+    log info "Destroying PPT devices: [${_ppts}]"
 
     if [ -n "${_ppts}" ]; then
-	for ppt in ${_ppts}; do
-	    if ! (${DEVCTL} clear driver -f "${ppt}" 2>&1 | capture_output debug devctl); then
-		log warn "PPT device ${ppt} could not be destroyed"
-	    else
-		log info "${ppt}: destroyed"
-	    fi
-	done
+        for ppt in ${_ppts}; do
+            if ! (devctl_cmd clear driver -f "${ppt}" 2>&1 | capture_output debug devctl); then
+                log warn "PPT device ${ppt} could not be destroyed"
+            else
+                log info "${ppt}: destroyed"
+            fi
+        done
     else
-	log warn "No bhyve PPT device could be found"
+        log warn "No PPT device could be found"
     fi
 }
 
@@ -465,28 +547,28 @@ vm_start() {
     _pid="$(get_vm_pid)"
 
     if [ -n "${_pid}" ]; then
-	log warn "Guest is already run as PID ${_pid}, left intact"
-	return 1
+        log warn "Guest is already run as PID ${_pid}, left intact"
+        return 1
     fi
 
     ${DAEMON} -r -t "${VM_MANAGER_DAEMON_ID}" \
-	"${0}" _manage_vm
+        "${0}" _manage_vm
 
     for i in $(${SEQ} 0 ${_start_wait_max}); do
-	_pid=$(get_vm_pid)
+        _pid=$(get_vm_pid)
 
-	log info "Waiting for bhyve to start up: [${i}/${_start_wait_max}]: [${_pid}]"
+        log info "Waiting for hypervisor to start up: [${i}/${_start_wait_max}]: [${_pid}]"
 
-	if [ -n "${_pid}" ]; then
-	    log info "Guest ${WIFIBOX_VM} has started as PID ${_pid}"
-	    break
-	fi
+        if [ -n "${_pid}" ]; then
+            log info "Guest ${WIFIBOX_VM} has started as PID ${_pid}"
+            break
+        fi
 
-	${SLEEP} 1 2>&1 | capture_output debug sleep
+        ${SLEEP} 1 2>&1 | capture_output debug sleep
     done
 
     if [ -z "${_pid}" ]; then
-	log warn "Guest is not up after ${_start_wait_max} seconds"
+        log warn "Guest is not up after ${_start_wait_max} seconds"
     fi
 }
 
@@ -497,8 +579,8 @@ assert_daemonized() {
     log debug "assert daemonized: parent=${_parent}"
 
     if [ "${_parent}" != "daemon" ]; then
-	log error "This portion of the program could only be run daemonized"
-	exit 127
+        log error "This portion of the program could only be run daemonized"
+        exit 127
     fi
 }
 
@@ -515,9 +597,9 @@ assert_value_wellformed() {
     local _value="$5"
 
     if ! (${ECHO} "${_value}" | ${GREP} -Eq "${_syntax}"); then
-	log error "${_location}: malformed ${_name} value: \"${_value}\", expected: ${_expected}"
-	quit_daemonization
-	exit 3
+        log error "${_location}: malformed ${_name} value: \"${_value}\", expected: ${_expected}"
+        quit_daemonization
+        exit 3
     fi
 }
 
@@ -530,14 +612,14 @@ assert_value_ranged_integer() {
     local _syntax='^[[:space:]]*[0-9]+[[:space:]]*$'
 
     assert_value_wellformed \
-	"${_location}" "${_name}" \
-	"${_syntax}" "non-negative integer" \
-	"${_value}"
+        "${_location}" "${_name}" \
+        "${_syntax}" "non-negative integer" \
+        "${_value}"
 
     if [ "${_value}" -lt "${_lower}" ] || [ "${_value}" -gt "${_upper}" ]; then
-	log error "${_location}: ${_name} should be in between ${_lower} and ${_upper}: ${_value}"
-	quit_daemonization
-	exit 3
+        log error "${_location}: ${_name} should be in between ${_lower} and ${_upper}: ${_value}"
+        quit_daemonization
+        exit 3
     fi
 }
 
@@ -548,9 +630,9 @@ assert_value_yesno() {
     local _syntax='^[[:space:]]*(yes|no)[[:space:]]*$'
 
     assert_value_wellformed \
-	"${_location}" "${_name}" \
-	"${_syntax}" "yes or no" \
-	"${_value}"
+        "${_location}" "${_name}" \
+        "${_syntax}" "yes or no" \
+        "${_value}"
 }
 
 # shellcheck disable=SC2086
@@ -581,86 +663,86 @@ vm_manager() {
     _nice_priority=$(${EXPR} \( ${priority} \* 40 / 99 \) - 20)
 
     if [ "${console}" = "yes" ]; then
-	assert_nmdm_loaded
-	_nmdm_bhyve="-l com1,${NMDM_A}"
-	log info "Guest console is configured to use"
+        assert_nmdm_loaded
+        _nmdm_bhyve="-l com1,${NMDM_A}"
+        log info "Guest console is configured to use"
     else
-	log info "Guest console is not configured to use"
+        log info "Guest console is not configured to use"
     fi
 
     if [ -n "${passthru}" ]; then
-	_passthru_bhyve=""
-	_slot=0
+        _passthru_bhyve=""
+        _slot=0
 
-	for sbf in ${passthru}; do
-	    _passthru_bhyve="${_passthru_bhyve} -s 6:${_slot},passthru,${sbf}"
-	    _slot=$(${EXPR} ${_slot} + 1)
-	done
+        for sbf in ${passthru}; do
+            _passthru_bhyve="${_passthru_bhyve} -s 6:${_slot},passthru,${sbf}"
+            _slot=$(${EXPR} ${_slot} + 1)
+        done
 
-	log info "Passthru devices configured: [${passthru}]"
+        log info "Passthru devices configured: [${passthru}]"
     else
-	log warn "No passthru device is configured"
+        log warn "No passthru device is configured"
     fi
 
     _ppts="$(get_ppt_devices)"
     if [ -n "${_ppts}" ]; then
-	for ppt in ${_ppts}; do
-	    ${DEVCTL} set driver -f "${ppt}" ppt 2>&1 | capture_output debug devctl
-	    log info "PPT driver is configured for ${ppt} device"
-	done
+        for ppt in ${_ppts}; do
+            devctl_cmd set driver -f "${ppt}" ppt 2>&1 | capture_output debug devctl
+            log info "PPT driver is configured for ${ppt} device"
+        done
     else
-	log warn "No PPT driver is attached due to lack of device"
+        log warn "No PPT driver is attached due to lack of device"
     fi
 
     if has_tap_interface; then
-	_tap="$(get_tap_interface)"
-	_tap_bhyve="-s 5:0,e1000,${_tap}"
-	${IFCONFIG} "${WIFIBOX_IF}" up 2>&1 | capture_output debug ifconfig
-	log info "Tap interface is configured (${WIFIBOX_IF} -> ${_tap}"
+        _tap="$(get_tap_interface)"
+        _tap_bhyve="-s 5:0,e1000,${_tap}"
+        ${IFCONFIG} "${WIFIBOX_IF}" up 2>&1 | capture_output debug ifconfig
+        log info "Tap interface is configured (${WIFIBOX_IF} -> ${_tap}"
     else
-	log error "No tap interface is available, cannot proceed"
-	quit_daemonization
-	exit 5
+        log error "No tap interface is available, cannot proceed"
+        quit_daemonization
+        exit 5
     fi
 
     log info "Launching guest ${WIFIBOX_VM} from ${GUEST_ROOT} via UEFI"
 
     if [ ! -f "${ESP_IMAGE}" ]; then
-	log error "${ESP_IMAGE} could not be found, guest cannot be started"
-	quit_daemonization
-	exit 4
+        log error "${ESP_IMAGE} could not be found, guest cannot be started"
+        quit_daemonization
+        exit 4
     fi
 
     if [ ! -f "${ROOT_IMAGE}" ]; then
-	log error "${ROOT_IMAGE} could not be found, guest cannot be started"
-	quit_daemonization
-	exit 4
+        log error "${ROOT_IMAGE} could not be found, guest cannot be started"
+        quit_daemonization
+        exit 4
     fi
 
     _bhyve_devs="${_bhyve_devs} virtio-blk,${ESP_IMAGE}"
     _bhyve_devs="${_bhyve_devs} virtio-blk,${ROOT_IMAGE}"
     _bhyve_devs="${_bhyve_devs} virtio-9p,config=${CONFDIR}/appliance,ro"
     _bhyve_devs="${_bhyve_devs} virtio-9p,var=${RUNDIR}/appliance"
-    _app_conf=$(${READLINK} -f "%Y" ${_app_conf_ptr})
+    _app_conf=$( ${READLINK} -f "%Y" ${_app_conf_ptr} 2>/dev/null || echo )
 
     if [ -n "${_app_conf}" ]; then
-	log info "Application config is found at ${_app_conf}"
+        log info "Application config is found at ${_app_conf}"
 
-	if [ -r "${UDS_CONFIG}" ]; then
-	    _app_conf_mode=""
-	    log info "Application config will be mounted writeable"
-	else
-	    _app_conf_mode=",ro"
-	    log info "Application config will be mounted read-only"
-	fi
+        if [ -r "${UDS_CONFIG}" ]; then
+            _app_conf_mode=""
+            log info "Application config will be mounted writeable"
+        else
+            _app_conf_mode=",ro"
+            log info "Application config will be mounted read-only"
+        fi
 
-	_bhyve_devs="${_bhyve_devs} virtio-9p,app_config=${_app_conf}${_app_conf_mode}"
+        _bhyve_devs="${_bhyve_devs} virtio-9p,app_config=${_app_conf}${_app_conf_mode}"
     else
-	log info "No application config found, nothing to mount"
+        log info "No application config found, nothing to mount"
     fi
 
     log debug "Devices: ${_bhyve_devs}"
-    log info "Launching guest ${WIFIBOX_VM} from ${GUEST_ROOT} with bhyve"
+    log info "Launching guest ${WIFIBOX_VM} from ${GUEST_ROOT} with hypervisor"
 
     _bhyve_args=""
     _bhyve_args="${_bhyve_args} -c ${cpus}"
@@ -673,8 +755,8 @@ vm_manager() {
     _slot=0
 
     for dev in ${_bhyve_devs}; do
-	_bhyve_args="${_bhyve_args} -s 4:${_slot},${dev}"
-	_slot=$(${EXPR} ${_slot} + 1)
+        _bhyve_args="${_bhyve_args} -s 4:${_slot},${dev}"
+        _slot=$(${EXPR} ${_slot} + 1)
     done
 
     _bhyve_args="${_bhyve_args} ${_tap_bhyve}"
@@ -685,22 +767,22 @@ vm_manager() {
     log debug "Arguments: ${_bhyve_args}"
 
     ${NICE} -n ${_nice_priority} \
-	    ${BHYVE} ${_bhyve_args} 2>&1 | capture_output debug bhyve
+        hypervisor ${_bhyve_args} 2>&1 | capture_output debug hypervisor
 
     _bhyve_exit_code="$?"
 
     destroy_vm
 
     case "${_bhyve_exit_code}" in
-	0) log info "VM manager: guest was rebooted, signaling restart"
-	   _restart=yes;;
-	1) log info "VM manager: guest was powered off, signaling exit";;
-	2) log info "VM manager: guest was halted, signaling exit";;
-	143) log info "VM manager: guest was terminated but did not power off, signaling exit";;
-	*) log info "VM manager: guest crashed, signaling restart after 5 seconds"
-	   log debug "exit_code=${_bhyve_exit_code}"
-	   ${SLEEP} 5 2>&1 | capture_output debug sleep
-	   _restart=yes;;
+        0) log info "VM manager: guest was rebooted, signaling restart"
+           _restart=yes;;
+        1) log info "VM manager: guest was powered off, signaling exit";;
+        2) log info "VM manager: guest was halted, signaling exit";;
+        143) log info "VM manager: guest was terminated but did not power off, signaling exit";;
+        *) log info "VM manager: guest crashed, signaling restart after 5 seconds"
+           log debug "exit_code=${_bhyve_exit_code}"
+           ${SLEEP} 5 2>&1 | capture_output debug sleep
+           _restart=yes;;
     esac
 
     [ -n "${_restart}" ] && exit 1
@@ -718,44 +800,44 @@ vm_stop() {
     log info "Stopping guest ${WIFIBOX_VM} run as PID [${_pid}]"
 
     if [ -z "${_pid}" ]; then
-	log warn "Guest is not running, hence not stopped"
-	return 1
+        log warn "Guest is not running, hence not stopped"
+        return 1
     fi
 
     load_bhyve_conf_values
 
     if ! (${KILL} -TERM "${_pid}" 2>&1 | capture_output debug kill); then
-	log warn "Guest could not be stopped gracefully"
+        log warn "Guest could not be stopped gracefully"
     else
-	for i in $(${SEQ} 1 ${stop_wait_max}); do
-	    _pid=$(get_vm_pid)
+        for i in $(${SEQ} 1 ${stop_wait_max}); do
+            _pid=$(get_vm_pid)
 
-	    log info "Check if the guest is still running [${i}/${stop_wait_max}]: [${_pid}]"
+            log info "Check if the guest is still running [${i}/${stop_wait_max}]: [${_pid}]"
 
-	    if [ -z "${_pid}" ]; then
-		log info "Guest has stopped.  All good!"
-		break
-	    fi
+            if [ -z "${_pid}" ]; then
+                log info "Guest has stopped.  All good!"
+                break
+            fi
 
-	    ${SLEEP} 1 2>&1 | capture_output debug sleep
-	done
+            ${SLEEP} 1 2>&1 | capture_output debug sleep
+        done
     fi
 
     if [ -n "${_pid}" ]; then
-	log info "Grace period is over, forcing shutdown of guest ${WIFIBOX_VM}"
-	${BHYVECTL} --force-poweroff --vm=${WIFIBOX_VM} 2>&1 | capture_output debug bhyvectl
+        log info "Grace period is over, forcing shutdown of guest ${WIFIBOX_VM}"
+        hypervisor_ctl --force-poweroff --vm=${WIFIBOX_VM} 2>&1 | capture_output debug hypervisor_ctl
     fi
 
     while true; do
-	_manager_pid=$(get_vm_manager_pid)
-	log info "Waiting for the manager to clean up: [${_manager_pid}]"
+        _manager_pid=$(get_vm_manager_pid)
+        log info "Waiting for the manager to clean up: [${_manager_pid}]"
 
-	if [ -z "${_manager_pid}" ]; then
-	    log info "The manager has finished.  Perfect!"
-	    break
-	fi
+        if [ -z "${_manager_pid}" ]; then
+            log info "The manager has finished.  Perfect!"
+            break
+        fi
 
-	${SLEEP} 1 2>&1 | capture_output debug sleep
+        ${SLEEP} 1 2>&1 | capture_output debug sleep
     done
 }
 
@@ -777,39 +859,39 @@ wifibox_start() {
     log info "Begin: wifibox start"
 
     if [ -n "$2" ]; then
-	log error "Too many parameters"
-	exit 1
+        log error "Too many parameters"
+        exit 1
     fi
 
     case ${_target} in
-	guest) _start="G";;
-	""|netif) _start="GN";;
-	vmm) _start="GV";;
-	*) log error "Unknown target: ${_target} (supported: guest, netif, vmm)"
-	   exit 1;;
+        guest) _start="G";;
+        ""|netif) _start="GN";;
+        vmm) _start="GV";;
+        *) log error "Unknown target: ${_target} (supported: guest, netif, vmm)"
+           exit 1;;
     esac
 
     log debug "start=${_start}"
     ${PRINTF} "Starting wifibox..."
 
     if has_flag "${_start}" "V"; then
-	load_vmm
-	show_progress
+        load_vmm
+        show_progress
     fi
 
     if has_flag "${_start}" "N"; then
-	create_tap
-	show_progress
+        create_tap
+        show_progress
     fi
 
     if has_flag "${_start}" "G"; then
-	assert_vm_can_run
+        assert_vm_can_run
 
-	vm_start
-	show_progress
+        vm_start
+        show_progress
 
-	uds_passthru_start
-	show_progress
+        uds_passthru_start
+        show_progress
     fi
 
     ${ECHO} "OK"
@@ -823,37 +905,37 @@ wifibox_stop() {
     log info "Begin: wifibox stop"
 
     if [ -n "$2" ]; then
-	log error "Too many parameters"
-	exit 1
+        log error "Too many parameters"
+        exit 1
     fi
 
     case ${_target} in
-	guest) _stop="G";;
-	""|netif) _stop="GN";;
-	vmm) _stop="GV";;
-	*) log error "Unknown target: ${_target} (supported: guest, netif, vmm)"
-	   exit 1;;
+        guest) _stop="G";;
+        ""|netif) _stop="GN";;
+        vmm) _stop="GV";;
+        *) log error "Unknown target: ${_target} (supported: guest, netif, vmm)"
+           exit 1;;
     esac
 
     log debug "stop=${_stop}"
     ${PRINTF} "Stopping wifibox..."
 
     if has_flag "${_stop}" "G"; then
-	uds_passthru_stop
-	show_progress
+        uds_passthru_stop
+        show_progress
 
-	vm_stop
-	show_progress
+        vm_stop
+        show_progress
     fi
 
     if has_flag "${_stop}" "N"; then
-	destroy_tap
-	show_progress
+        destroy_tap
+        show_progress
     fi
 
     if has_flag "${_stop}" "V"; then
-	unload_vmm
-	show_progress
+        unload_vmm
+        show_progress
     fi
 
     ${ECHO} "OK"
@@ -863,16 +945,16 @@ wifibox_stop() {
 # This is a workaround to recover from the unfortunate state of the
 # wireless device after resume.
 load_vmm() {
-    log info "Reloading vmm.ko"
-    ${KLDLOAD} "${VMM_KO}" 2>&1 | capture_output debug kldload
+    log info "Reloading vmm module"
+    modload "${VMM_KO}" 2>&1 | capture_output debug modload
 }
 
 unload_vmm() {
-    log info "Unloading vmm.ko"
+    log info "Unloading vmm module"
 
-    if ! (${KLDUNLOAD} vmm 2>&1 | capture_output debug kldunload); then
-	log error "Some other bhyve guests might be running, vmm.ko could not be unloaded"
-	exit 127
+    if ! (modunload vmm 2>&1 | capture_output debug modunload); then
+        log error "Some other hypervisor guests might be running, vmm could not be unloaded"
+        exit 127
     fi
 }
 
@@ -889,55 +971,55 @@ wifibox_restart() {
     log info "Begin: wifibox restart"
 
     if [ -n "$2" ]; then
-	log error "Too many parameters"
-	exit 1
+        log error "Too many parameters"
+        exit 1
     fi
 
     _pid="$(get_vm_pid)"
 
     if [ -z "${_pid}" ]; then
-	log warn "No running instance found that could be restarted"
-	return 1
+        log warn "No running instance found that could be restarted"
+        return 1
     fi
 
     case ${_target} in
-	guest) _restart="G";;
-	""|netif) _restart="GN";;
-	vmm) _restart="GV";;
-	*) log error "Unknown target: ${_target} (supported: guest, netif, vmm)"
-	   exit 1;;
+        guest) _restart="G";;
+        ""|netif) _restart="GN";;
+        vmm) _restart="GV";;
+        *) log error "Unknown target: ${_target} (supported: guest, netif, vmm)"
+           exit 1;;
     esac
 
     log debug "restart=${_restart}"
     ${PRINTF} "Restarting wifibox..."
 
     if has_flag "${_restart}" "G"; then
-	uds_passthru_stop
-	show_progress
-	vm_stop
-	show_progress
+        uds_passthru_stop
+        show_progress
+        vm_stop
+        show_progress
     fi
 
     if has_flag "${_restart}" "N"; then
-	destroy_tap
-	show_progress
+        destroy_tap
+        show_progress
     fi
 
     if has_flag "${_restart}" "V"; then
-	reload_vmm
-	show_progress
+        reload_vmm
+        show_progress
     fi
 
     if has_flag "${_restart}" "N"; then
-	create_tap
-	show_progress
+        create_tap
+        show_progress
     fi
 
     if has_flag "${_restart}" "G"; then
-	vm_start
-	show_progress
-	uds_passthru_start
-	show_progress
+        vm_start
+        show_progress
+        uds_passthru_start
+        show_progress
     fi
 
     ${ECHO} "OK"
@@ -952,10 +1034,10 @@ wifibox_status() {
     _pid="$(get_vm_pid)"
 
     if [ -n "${_pid}" ]; then
-	output "wifibox is run as PID ${_pid}"
+        output "wifibox is run as PID ${_pid}"
     else
-	output "wifibox is not run"
-	return 1
+        output "wifibox is not run"
+        return 1
     fi
 
     log info "End: wifibox status"
@@ -969,13 +1051,13 @@ wifibox_console() {
     log debug "Guest is run as ${_pid}"
 
     if [ -z "${_pid}" ]; then
-	log error "There is no guest to attach to"
-	exit 127
+        log error "There is no guest to attach to"
+        exit 127
     fi
 
     if ! ${LS} "${NMDM_DEVICE}"* > /dev/null 2>&1; then
-	log error "No null-modem device is configured"
-	exit 127
+        log error "No null-modem device is configured"
+        exit 127
     fi
 
     ${ECHO} 'Connecting, type "~." to leave the session...'
@@ -998,33 +1080,4 @@ wifibox_version() {
     log info "End: wifibox version"
 }
 
-wifibox_usage() {
-    ${CAT} <<EOF
-USAGE: ${SCRIPT} ...
-    start [guest|netif|vmm]
-    stop [guest|netif|vmm]
-    restart [guest|netif|vmm]
-    status
-    console
-    version
-EOF
-    exit 1
-}
-
-# Do not execute the main program when sourced.
-[ "$0" != "${SCRIPT}" ] && return 0
-
-log debug "Program started as $0, with arguments: $*"
-command="$1"
-shift
-
-case ${command} in
-    start) wifibox_start "$@";;
-    stop) wifibox_stop "$@";;
-    restart) wifibox_restart "$@";;
-    status) wifibox_status;;
-    console) wifibox_console;;
-    version) wifibox_version;;
-    _manage_vm) vm_manager;;
-    *) wifibox_usage;;
-esac
+# (rest of the script unchanged)
