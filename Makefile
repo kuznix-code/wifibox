@@ -59,7 +59,7 @@ SUB_LIST+=	SUSPEND_CMD=/usr/bin/true \
 		RESUME_CMD=/usr/bin/true
 .endif
 
-_SUB_LIST_EXP= 	${SUB_LIST:S/$/!g/:S/^/ -e s!%%/:S/=/%%!/}
+_SUB_LIST_EXP=	${SUB_LIST:S/$/!g/:S/^/ -e s!%%/:S/=/%%!/}
 _SCRIPT_SRC=	sbin/wifibox
 _MAN_SRC=	man/wifibox.8
 
@@ -70,6 +70,12 @@ install:
 
 	$(MKDIR) -p $(ETCDIR)/wifibox
 	$(CP) -R etc/* $(ETCDIR)/wifibox/
+	# Install platform-specific stubs (if present)
+	$(MKDIR) -p $(ETCDIR)/wifibox/platform
+	@# Copy platform files if they exist in the source tree
+	@if [ -d etc/platform ]; then \
+		$(CP) -R etc/platform/* $(ETCDIR)/wifibox/platform/ || true; \
+	fi
 
 	$(MKDIR) -p $(RCDIR)
 	$(SED) ${_SUB_LIST_EXP} rc.d/wifibox > $(RCDIR)/wifibox
