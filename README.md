@@ -1,191 +1,88 @@
-# Project FreeBSD Wifibox
+# Wifibox
 
-Wifibox deploys a Linux guest to drive a wireless networking card on
-the FreeBSD host system with the help of PCI pass-through.  There have
-been guides on the Internet to suggest the use of such techniques to
-improve the wireless networking experience on FreeBSD, of which
-Wifibox tries to implement as a single easy-to-use software package.
+Wifibox deploys a small guest operating system to drive a wireless networking card on the host using PCI pass-through. The guest runs the wireless stack and exposes network connectivity to the host, letting you use a guest-supported driver for a host device that otherwise performs poorly.
 
-- [`bhyve`], a lightweight virtualization solution for FreeBSD, is
-  utilized to run the embedded Linux system.  This helps to achieve
-  low resource footprint.
+This repository contains the host-side scripts, configuration templates and helper files to manage the guest appliance and the device pass-through.
 
-- Configuration files could be shared with the host system.  For
-  example, the guest may either use `wpa_supplicant(8)` or
-  `hostapd(8)` and it is possible to import the host's
-  `wpa_supplicant.conf(5)` and `hostapd.conf(5)` files without any
-  changes.
+Highlights
 
-- When configured by the guest, `wpa_supplicant(8)` or `hostapd(8)`
-  control sockets could be exposed, which enables use of related
-  utilities directly from the host, such as `wpa_cli(8)` or
-  `wpa_gui(8)` from the [`net/wpa_supplicant_gui`] FreeBSD package, or
-  `hostapd_cli(8)`.
+- Runs a lightweight guest appliance to control a PCI wireless card via PCI pass-through; keeps host resource usage low.
+- Configuration files can be shared with the host; for example the guest may use wpa_supplicant or hostapd and it is possible to import host configuration files without changes.
+- Control sockets for wpa_supplicant/hostapd can be exposed and forwarded so host utilities may control the guest service.
+- Everything required to run the host-side service is provided in this repository. Guest disk images are not included and must be installed separately.
 
-- Everything is shipped in a single FreeBSD package that can be easily
-  installed and removed.  It comes with an `rc(8)` system service that
-  automatically launches the guest on boot and stops it on shutdown.
+Warning
 
-- A workaround is supplied for laptops to support suspend/resume.
+This is an experimental project without guarantees or warranties. Use it at your own risk. Wifibox is a workaround for hosts that do not have satisfactory wireless driver support; it is not intended to be a permanent replacement for a native host networking stack.
 
-For more information on the background and the high-level overview of
-Wifibox, please read the [article] in the November/December 2024
-edition of the FreeBSD Journal on Virtualization.
+Prerequisites
 
-## Warning
+Before installation, verify these requirements on the target computer:
 
-*This is a work-in-progress experimental software project without any
-guarantees or warranties.  It is shared in the hope that is going to
-be useful and inspiring for others.  By its nature, it is a workaround
-and shall be deprecated once the FreeBSD wireless drivers and
-networking stack are updated to catch up with Linux.*
+- A CPU and platform that support PCI pass-through (IOMMU). Sufficient memory (guest memory depends on the appliance, typically ~256 MB or more) and disk space for the guest image are required.
+- A PCI wireless card that is supported by the guest kernel (usually a recent Linux kernel image). The driver in the guest should support Message Signaled Interrupts (MSI) if your host hypervisor requires it for pass-through. USB wireless adapters are not supported.
+- Host virtualization components that support PCI pass-through on your platform. Wifibox is host-implementation-agnostic; the exact hypervisor or kernel module to use depends on the host operating system (see Compatibility below). You must provide a working mechanism to launch the guest and bind/unbind the device for pass-through.
 
-*Wifibox does not necessarily offer a drop-in replacement for the
-wireless networking stack of FreeBSD.  This is entirely determined by
-how the guest exposes network traffic for the host, which might happen
-via Network Address Translation (NAT) or bridging, for example.  Be
-sure to consult the documentation of the guest itself before use.*
+Guest image layout
 
-## Prerequisites
+The guest appliance files are not included in this repository and should be provided separately. The expected layout is:
 
-Before the installation, please check if those items are present on
-the target computer otherwise running the software might not be
-possible:
+- esp.img: EFI System Partition (ESP) containing the guest kernel or bootloader and supporting files (FAT file system for EFI-based boots).
+- root.img: Root file system image used as the guest's secondary disk.
 
-- A CPU that is supported by [`bhyve`] PCI pass-through (I/O MMU) with
-  ~256 MB physical memory or less depending on the guest, and some
-  disk space available for the guest virtual disk image.
+Installation (manual)
 
-- A PCI wireless card that is known to be supported by the recent
-  Linux versions, but it is not performing well enough under FreeBSD.
-  Also, the Linux driver has to support [Message Signaled Interrupts]
-  (MSI) because that is required for the PCI pass-through to work.
-  USB wireless adapters are not supported.
+A Makefile is provided for manual installation (recommended for development and testing):
 
-- A [supported FreeBSD/amd64 system]: 14.4-RELEASE or 15.0-RELEASE.
-  Later versions will also probably work, but your mileage may vary.
-
-- [`bhyve` UEFI firmware] or the corresponding
-  `sysutils/bhyve-firmware` FreeBSD package, so the Linux guest could
-  be booted via EFI.
-
-- [`socat`] or the respective `net/socat` FreeBSD package, through
-  which control sockets for `wpa_supplicant(8)` and `hostapd(8)` could
-  be published on the host.  The presence of `socat` is required only
-  if this feature is activated, which depends on the guest
-  configuration.
-
-## Installation
-
-Use the `net/wifibox` FreeBSD port which is available at the
-[`freebsd-wifibox-port`] repository and automatically takes care of all
-the following details, installs a guest image, and offers proper
-removal of the installed files, hence it is a more convenient way to
-manage the whole installation process.
-
-### Manual Installation
-
-Alternatively, a `Makefile` is present in this repository that can be
-used to install all the files, as described below.  This workflow is
-mostly recommended for development and testing.
-
-```console
-# make install \
+make install \
     PREFIX=<prefix> \
-    LOCALBASE=<prefix of the bhyve-firmware and socat packages> \
+    LOCALBASE=<local prefix> \
     GUEST_ROOT=<guest disk images location> \
     GUEST_MAN=<guest manual page location> \
     RECOVERY_METHOD=<method to use on suspend and resume>
-```
 
-By default, `PREFIX` is set to `/usr/local`.  In addition to that, it
-is possible to set the `LOCALBASE` variable to tell if the prefix
-under which the `bhyve-firmware` data files and the `socat` utility
-were installed is different.
+Default PREFIX is /usr/local. LOCALBASE can be used to point to alternate locations for utilities used by the install workflow.
 
-The `GUEST_ROOT` variable should point to the directory that houses
-the files related to the guest.  Note that these are not part of the
-repository and should be installed individually.  For example, such
-files could be installed from the [`freebsd-wifibox-alpine`]
-repository.
+RECOVERY_METHOD can be used to configure how Wifibox behaves around suspend/resume events; possible values provided by the Makefile are: restart_vmm, suspend_guest, suspend_vmm or empty (disabled).
 
-- `esp.img` should hold the EFI System Partition (ESP), which is a
-  FAT12 file system where either the Linux kernel itself (wrapped in
-  the [EFI stub]) or some other boot loader (e.g. GRUB, Syslinux) is
-  stored, alongside the kernel, its configuration and data files.
+Documentation
 
-- `root.img` is the contents of the root file system, which is made
-  available for booting as the secondary disk drive, e.g. under
-  `/dev/vdb`, once the kernel has been loaded.
+A manual page is included; install it via the Makefile and inspect using your platform's man(1) tooling after installation.
 
-The `RECOVERY_METHOD` variable can be used to tell in which way
-Wifibox should be revived on a suspend/resume pair of events.
+Compatibility
 
-- The default value is `restart_vmm`, which means that guest will be
-  stopped, and the `vmm(4)` kernel module will be reloaded then the
-  guest will be restarted on resume.
-- Another option is `suspend_guest`, which will stop the only guest on
-  suspend and then start it again on resume.
-- Finally, there is `suspend_vmm`, which will stop both the guest and
-  unload the `vmm(4)` kernel module on suspend and implement the
-  reverse on resume.
-- The recovery mechanism itself could be disabled by setting this
-  value to be empty.
+This project aims to support a variety of non-Linux and non-FreeBSD host operating systems and targets. The goal is to support systems where the host kernel or hypervisor allows PCI pass-through and can run a guest appliance to control a device.
 
-## Documentation
+Notable host operating systems targeted for support (examples):
 
-There is a manual page installed that can be used to learn about the
-basic usage and configuration.
+- OpenBSD
+- NetBSD
+- Haiku
+- Managarm
+- Other Unix-like or microkernel-based systems that provide PCI pass-through or a comparable device isolation mechanism
 
-```console
-# man wifibox
-```
+Target guest architectures and triplets
 
-## Compatibility
+- The guest appliance images are expected to be built for "*-elf" targets (for example x86_64-elf, aarch64-elf or other bare-metal EFI-targeted images) in environments where Linux or FreeBSD target images are not appropriate.
+- Explicitly excluded targets: linux-* and freebsd-* (this project focuses on non-Linux and non-FreeBSD embedded guest targets and host-side integrations where that fits the workflow).
 
-It has been reported working successfully on the following
-configurations:
+Implementation notes
 
-| CPU | Wireless NIC | Model | FreeBSD |
-| :-- | :----------- | :---- | :------ |
-| AMD A6-9225 | Realtek RTL8821CE | Lenovo IdeaPad 330-15AST | 13.1-RELEASE, 14-CURRENT |
-| AMD Ryzen 3 5300U | Realtek RTL8852CE | HP HP Laptop 15s-eq2xxx | 14.1-RELEASE |
-| AMD Ryzen 5 5600G | Intel Wi-Fi 6 AX-200 | ASUS ROG STRIX B550-I GAMING | 13-STABLE, 14-CURRENT |
-| AMD Ryzen 5 5600G | AMD RZ608 Wi-Fi 6E (MediaTek MT7921K) | ASUS ROG STRIX B550-I GAMING | 13-STABLE, 14-CURRENT |
-| AMD Ryzen 5 PRO 8540U | AMD RZ616 Wi-Fi 6E 802.11ax (MediaTek MT7922) | HP EliteBook 845 G11 (8R632AV) | GhostBSD 24.10.1 |
-| AMD Ryzen 7 5700U | Realtek RTL8852AE | HP 255 G8 | 13.2-RELEASE |
-| AMD Ryzen 7 5700X | Intel Wi-Fi 6 AX-200 | GigaByte X570S | 13-STABLE, 14-CURRENT |
-| AMD Ryzen 7 5700X | AMD RZ608 Wi-Fi 6E (MediaTek MT7921K) | GigaByte X570S | 13-STABLE, 14-CURRENT |
-| AMD Ryzen 7 5825U | Realtek RTL8852BE | HP Laptop 15s-eq3636nz | 13.2-RC3 |
-| AMD Ryzen 9 9950X | Intel Wi-Fi 6E AX210 | Minisforum MS-A1-N0CPUR | 14.2-RELEASE |
-| Intel Core i5-3210M | Broadcom BCM4331 | Apple MacBook Pro A1278 | 13.2-RELEASE |
-| Intel Core i5-5300U | Intel Wireless 7265 | Lenovo ThinkPad T450 | 13.1-RELEASE |
-| Intel Core i5-6300U | Intel Dual Band Wireless AC 8260 | Lenovo ThinkPad X270 | 13.5-RELEASE, 14.4-RELEASE, 15.0-RELEASE, 16.0-CURRENT (snapshot `20260324-4f8a1b4dffa8-284626`) |
-| Intel Core i5-10210U | Intel Dual Band Wireless AC 9500 | System 76 Lemur Pro 'LEMP9' | 13.0-RELEASE |
-| Intel Core i5-8250U | Realtek RTL8822BE | Lenovo YOGA 730 | 13.2-RELEASE |
-| Intel Core i5-8265U | Intel Dual Band Wireless AC 9560 | Lenovo ThinkPad T490 | 14.3-RELEASE |
-| Intel Core i7-4600M | Intel Centrino Advanced-N 6235 | Dell Latitude E6440 | 13.0-RELEASE |
-| Intel Core i7-4870HQ | Broadcom BCM43602 | Apple MacBook Pro 11.4 | 13.3-RELEASE |
-| Intel Core i7-6600U | Intel(R) Dual Band Wireless AC 8260 | Lenovo ThinkPad T470 | 14.1-RELEASE |
-| Intel Core i7-7500U | Intel(R) Dual Band Wireless AC 8265 | Lenovo ThinkPad X1 Carbon Gen5 | 13.2-RELEASE |
-| Intel Core i7-7700K | Intel(R) Dual Band Wireless AC 3168 | Desktop HP 820 NL | 13.2-RELEASE |
-| Intel Core i7-7820HQ | Intel(R) Wi-Fi 6E AX210/AX1675 | Dell Precision 7720 | 13.3-RELEASE, 14.1-RELEASE  |
-| Intel Core i7-8565U | Qualcomm Atheros QCA6174 | Dell XPS 9380 | 13-STABLE |
-| Intel Core i7-8650U | Intel(R) Dual Band Wireless AC 8265 | Lenovo ThinkPad T480 | 13.1-RELEASE |
-| Intel Core i7-8665U | Intel(R) Dual Band Wireless AC 9560 | Lenovo ThinkPad X1 Carbon | GhostBSD 24.01.1 |
-| Intel Core i7-10850H | Intel(R) Wi-Fi 6 AX201 | Dell Precision 7550 | 14.2-STABLE |
-| Intel Core i7-1185G7 | Intel(R) Wi-Fi 6 AX201 | Lenovo ThinkPad X1 Carbon Gen9 | 14.2-RELEASE |
+- This repository provides host-side scripts and configuration templates. Because host APIs and commands differ between operating systems (module management, device binding, hypervisor invocation), the implementation must be adapted per-host. See the etc/ and rc.d/ (or equivalent) directories for configuration templates.
+- Contributions adding platform-specific support (scripts, packaging, and documentation) for OpenBSD, NetBSD, Haiku, Managarm, and other platforms are welcome. Please provide clear instructions for how the host-side pieces should be installed and any required kernel modules, device bindings or hypervisor tooling.
 
-Feel free to submit a pull request or write an email to have your
-configuration added here!
+Compatibility table
 
-[`bhyve`]: https://wiki.freebsd.org/bhyve
-[Message Signaled Interrupts]: https://www.kernel.org/doc/Documentation/PCI/MSI-HOWTO.txt
-[`freebsd-wifibox-port`]: https://github.com/pgj/freebsd-wifibox-port
-[`freebsd-wifibox-alpine`]: https://github.com/pgj/freebsd-wifibox-alpine
-[`net/wpa_supplicant_gui`]: https://cgit.freebsd.org/ports/tree/net/wpa_supplicant_gui
-[supported FreeBSD/amd64 system]: https://www.freebsd.org/releases/
-[`bhyve` UEFI firmware]: https://wiki.freebsd.org/bhyve/UEFI
-[`socat`]: http://www.dest-unreach.org/socat/
-[EFI stub]: https://docs.kernel.org/admin-guide/efi-stub.html
-[article]: https://github.com/pgj/freebsd-wifibox/releases/download/freebsd-journal-2024-06/freebsd-journal-wifibox.pdf
+This section formerly contained a list of host-specific FreeBSD configurations. That FreeBSD-specific content has been removed. Please open an issue or submit a pull request with your host, CPU, wireless NIC and working host version if you have a configuration to add.
+
+Contributing
+
+If you add support for a new host platform or a new target triplet, please:
+
+- Add a short platform-specific README or instructions in etc/ or a new directory under contrib/.
+- Add any platform-specific scripts to sbin/ and corresponding service unit files or rc scripts in the appropriate place (rc.d/ is a template for some systems).
+- Update this README with a short entry describing how that platform integrates with Wifibox.
+
+License
+
+This project is licensed under the terms contained in the LICENSE file in this repository.
